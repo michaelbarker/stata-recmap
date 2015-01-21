@@ -163,17 +163,25 @@ quietly {
 			display as error "Error in distance program" 
 			error _rc
 		}
-		
-		* Sort by distance with key value on top
-		sort _source _dist, stable
-		
-		* Call program to choose best match 
-		* Default program requires varlist
-		if `"`match'"'== "_recmap_match" {
-			capture noisily: `match' `varlist'
+
+		* Check if distance program has dropped all potential matches with hard matching requirements
+		if _N==1 {
+			noisily: display as result "No potential matches - record skipped"
+			fmore
 		}
-		* Do not pass varlist if user supplies match program
-		else capture noisily: `match' 
+		* If potential matches exist, look for best match
+		else {
+			* Sort by distance with key value on top
+			sort _source _dist, stable
+			
+			* Call program to choose best match 
+			* Default program requires varlist
+			if `"`match'"'== "_recmap_match" {
+				capture noisily: `match' `varlist'
+			}
+			* Do not pass varlist if user supplies match program
+			else capture noisily: `match' 
+		}
 
 	   * Get matched record and replace
 	   if _rc==0 {
