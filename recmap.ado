@@ -16,15 +16,20 @@
 		_match = 0
 		_source = 1
 
+ Update 2015-02-03:
+ 	- Allow for multiple matches through match program
+	- Add option to match with replacement
+
 *******************************************************************************/
 
 
 program define recmap
-	syntax varlist using/ , SAving(string) [DISTance(string) MATCH(string) STart(numlist integer min=1 max=1 >0) SAVESKipped ]
+	syntax varlist using/ , SAving(string) [DISTance(string) MATCH(string) STart(integer 1) SAVESKipped REPLACEUSING]
 
 quietly {
-	if "`start'"=="" {
-		local start 1
+	if `start'<=0 {
+		display as error `"Start option must be greater than zero"'
+		error 111
 	}
 
 	if "`distance'"=="" {
@@ -117,7 +122,6 @@ quietly {
 		error _rc
 	}
 
-
 	* If mapping data set has any records in it...
 	* Remove already matched records from master and using:
 	quietly: describe using `"`ss.dta'"' , short
@@ -132,22 +136,38 @@ quietly {
 		order _match _source _dist `varlist'
 		save `"`mastname'"' , replace
 	
-		* Merge matches with Using
-		clear
-		use `"`ss.dta'"' 
-		keep if _source==2
-		merge 1:1 `varlist' using `"`usename'"' 
-		keep if _merge==2
-		drop _merge
-		save `"`usename'"' , replace
+		quietly: count
+		if r(N)==0 {
+			display as error `"All master records already exist in mapping file"'
+			exit(0)
+		}
+
+		* If matching with replacement, don't do this.
+		* Do only if matching with replacement was not elected.
+		if "`replaceusing'"=="" { 
+			* Merge matches with Using
+			clear
+			use `"`ss.dta'"' 
+			keep if _source==2
+			merge 1:1 `varlist' using `"`usename'"' 
+			keep if _merge==2
+			drop _merge
+			save `"`usename'"' , replace
+		}
 	}
 
 	tempfile tempname
 	* Loop through records from Master data set
 	quietly: describe using `"`mastname'"' , short
 	local max = r(N) 
+	* Check start value
+	if `start'>`max' {
+		display as error `"Start obs. (`start') greater than remaining unmatched (`max')"'
+		error 111
+	}
+	* Begin loop
 	forvalues n = `start'/`max' {
-		display as input "Current record: `n' of `max'"
+		noisily: display as result "Current record: `n' of `max'"
 		
 		clear
 		use in `n' using `"`mastname'"'
@@ -173,7 +193,7 @@ quietly {
 		else {
 			* Sort by distance with key value on top
 			sort _source _dist, stable
-			
+
 			* Call program to choose best match 
 			* Default program requires varlist
 			if `"`match'"'== "_recmap_match" {
@@ -186,37 +206,57 @@ quietly {
 	   * Get matched record and replace
 	   if _rc==0 {
 			quietly: count if _match
-			if r(N)==1 {
+			local nmatch = r(N)
+
+			if `nmatch'>=1 {
 				* If match was chosen
 				* Save matched records
-				keep if _n==1 | _match
-				replace _match = _match[2]
-				replace _dist  = _dist[2]
-				replace _id	   = 0 // initialize _id, so summarize command below returns a valid r(max), even if ss.dta is empty.
+				keep if _source==1 | _match
+				sort _source _dist, stable
+
+				* If single match, fill in match status and distance
+				if `nmatch'==1 {
+					replace _match = _match[2] in 1
+					replace _dist  = _dist[2]  in 1
+				}
+
+				* If multiple matches, replace master record variables to . 
+				else {	
+					replace _match = . in 1
+					replace _dist  = . in 1 
+				}
+
+				replace _id = 0 // initialize _id, so summarize command below returns a valid r(max), even if ss.dta is empty.
 				keep _id _match _source _dist `varlist'
 				* save `"`tempname'"' , replace
 
 				* Append previous matches to current record and match 
 				append using `"`ss'.dta"' 
+
 				* Get id number for new matches
 				quietly: summarize _id 
 				local nextid = r(max)+1
-				replace _id = `nextid' in 1/2
+				replace _id = `nextid' in 1/`++nmatch'
+
 				* Save new match file
 				order _id _source _match _dist, first
 				save `"`ss'.dta"' , replace 
-
-			   	* Drop matched observation from set of potential matches
-				keep in 1/2 
-				merge 1:1 _source `varlist' using `"`usename'"'
-				keep if _merge==2
-				drop _merge 
-				save `"`usename'"' , replace
+				
+				* If matching with replacement, don't do this.
+				* Do only if matching with replacement was not elected.
+				if "`replaceusing'"=="" { 
+					* Drop matched observation from set of potential matches
+					keep in 2/`nmatch'
+					merge 1:1 _source `varlist' using `"`usename'"'
+					keep if _merge==2
+					drop _merge 
+					save `"`usename'"' , replace
+				}
 
 			} /* end if r(N)==1 */
 
 			* No match, but user elects to save skipped records:
-			else if "`saveskipped'"!="" {
+			else if r(N)==0 & "`saveskipped'"!="" {
 				* Keep original record only 
 				keep if _n==1 
 				replace _match = 0 
@@ -232,7 +272,7 @@ quietly {
 				replace _id = `nextid' in 1
 				* Save new match file
 				order _id _source _match _dist, first
-				sort _id _source
+				sort _id _source _dist, stable
 				save `"`ss'.dta"' , replace 
 			} /* end saveskipped */
 
@@ -385,7 +425,7 @@ end
 * Default matching program: interactive
 program define _recmap_match
 	syntax varlist
-	* sort _source _dist, stable
+	sort _source _dist, stable
 	_recmap_getinput `varlist'
 end
 
